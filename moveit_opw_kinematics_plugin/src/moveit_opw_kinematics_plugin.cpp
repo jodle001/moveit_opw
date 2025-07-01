@@ -149,31 +149,17 @@ namespace moveit_opw_kinematics_plugin {
     // Test with angles that make sense for both OPW and MoveIt
     const std::array<double, 6> test_angles = {0.1, -0.1, 0.2, -0.3, 0.5, -0.8};
 
-    // OPW will SUBTRACT the offsets internally in forward()
-    // So the actual angles used internally by OPW will be:
-    // q[i] = test_angles[i] - offset[i]
-    // For joint 3: q[2] = 0.2 - (-1.5708) = 0.2 + 1.5708 = 1.7708
-
-    // For MoveIt, we need to give it the angles that match what OPW is actually using
-    std::array<double, 6> moveit_angles = test_angles;
-    // Compensate for what OPW does internally
-    for (size_t i = 0; i < 6; ++i) {
-      moveit_angles[i] = test_angles[i] - opw_parameters_.offsets[i];
-    }
-
     RCLCPP_INFO(LOGGER, "Self-test input angles: [%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]",
                 test_angles[0], test_angles[1], test_angles[2],
                 test_angles[3], test_angles[4], test_angles[5]);
-    RCLCPP_INFO(LOGGER, "Angles after OPW offset subtraction: [%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]",
-                moveit_angles[0], moveit_angles[1], moveit_angles[2],
-                moveit_angles[3], moveit_angles[4], moveit_angles[5]);
 
     // Get FK from OPW with the original test angles
     auto fk_pose_opw = opw_kinematics::forward(opw_parameters_, test_angles);
 
     // Give MoveIt the angles that OPW is actually using internally
-    robot_state_->setJointGroupPositions(joint_model_group_, moveit_angles.data());
-
+    robot_state_->setJointGroupPositions(joint_model_group_, test_angles.data());
+    // root join
+    RCLCPP_INFO_STREAM(LOGGER, "global link name: " << base_frame_ );
     // Get FK from MoveIt
     auto fk_pose_moveit = robot_state_->getGlobalLinkTransform(tip_frames_[0]);
     auto base = robot_state_->getGlobalLinkTransform(base_frame_);
@@ -184,10 +170,13 @@ namespace moveit_opw_kinematics_plugin {
       RCLCPP_ERROR(LOGGER, "Self-test failed");
       auto opw_pos = fk_pose_opw.translation();
       auto moveit_pos = fk_pose_moveit.translation();
-      RCLCPP_ERROR(LOGGER, "OPW position: [%.4f, %.4f, %.4f]",
+      RCLCPP_ERROR(LOGGER, "OPW Pose: [%.4f, %.4f, %.4f]",
                    opw_pos.x(), opw_pos.y(), opw_pos.z());
+      RCLCPP_ERROR_STREAM(LOGGER, "OPW Matrix: " << std::endl << fk_pose_opw.linear());
       RCLCPP_ERROR(LOGGER, "MoveIt position: [%.4f, %.4f, %.4f]",
                    moveit_pos.x(), moveit_pos.y(), moveit_pos.z());
+      RCLCPP_ERROR_STREAM(LOGGER, "Moveit Matrix: " << std::endl << fk_pose_moveit.linear());
+
       return false;
     }
 
