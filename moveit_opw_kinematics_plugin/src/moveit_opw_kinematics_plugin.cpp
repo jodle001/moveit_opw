@@ -164,6 +164,7 @@ namespace moveit_opw_kinematics_plugin {
     auto fk_pose_moveit = robot_state_->getGlobalLinkTransform(tip_frames_[0]);
     auto base = robot_state_->getGlobalLinkTransform(base_frame_);
     fk_pose_moveit = base.inverse() * fk_pose_moveit;
+    fk_pose_opw = base.inverse() * fk_pose_opw;
 
     if (!comparePoses(fk_pose_opw, fk_pose_moveit)) {
       // Debug output
@@ -940,10 +941,11 @@ namespace moveit_opw_kinematics_plugin {
     // Transform input pose
     // needed if we introduce a tip frame different from tool0
     // or a different base frame
-    // Eigen::Isometry3d tool_pose = diff_base.inverse() * pose *
-    // tip_frame.inverse();
+    auto base_transform = robot_state_->getGlobalLinkTransform(base_frame_);
 
-    auto sols = opw_kinematics::inverse(opw_parameters_, pose);
+    Eigen::Isometry3d tool_pose = base_transform * pose;// * tip_frame.inverse();
+    
+    auto sols = opw_kinematics::inverse(opw_parameters_, tool_pose);
 
     // Check the output
     std::vector<double> tmp(6); // temporary storage for API reasons
