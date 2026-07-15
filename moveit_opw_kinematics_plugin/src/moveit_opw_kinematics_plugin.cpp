@@ -91,9 +91,8 @@ namespace moveit_opw_kinematics_plugin {
       return false;
     }
 
-    // Universal Toolframes: resolve the fixed OPW-frame -> tip transform
-    // (identity unless opw_tool_frame is configured). Must happen before the
-    // self-test, which validates FK including this transform.
+    // Resolve the OPW-frame -> tip transform before the self-test, which
+    // validates FK including it.
     if (!computeTipOffset()) {
       return false;
     }
@@ -149,10 +148,8 @@ namespace moveit_opw_kinematics_plugin {
   bool MoveItOPWKinematicsPlugin::computeTipOffset() {
     tip_offset_ = Eigen::Isometry3d::Identity();
 
-    // Same lookup chain as the geometric parameters in setOPWParameters():
-    // move_group cache first, then local node parameters, then the async
-    // move_group fallback. Each helper already tries the bare and
-    // robot_description_kinematics.<group>. prefixed names.
+    // Same lookup chain as the geometric parameters: move_group cache,
+    // then local node parameters.
     std::string opw_tool_frame;
     bool found = lookupCachedParam("opw_tool_frame", opw_tool_frame, std::string(""));
     if (!found || opw_tool_frame.empty()) {
@@ -160,7 +157,6 @@ namespace moveit_opw_kinematics_plugin {
     }
 
     if (!found || opw_tool_frame.empty()) {
-      // Legacy behaviour: the OPW model reaches the tip frame directly.
       RCLCPP_INFO(LOGGER, "opw_tool_frame not set; OPW model reaches tip frame '%s' directly",
                   tip_frames_[0].c_str());
       return true;
@@ -176,9 +172,8 @@ namespace moveit_opw_kinematics_plugin {
       return false;
     }
 
-    // The transform must be constant, i.e. only fixed joints between the OPW
-    // frame and the tip. Evaluate it at two distinct configurations to catch
-    // a misconfigured frame that actually moves relative to the tip.
+    // The transform must be constant (only fixed joints to the tip); check
+    // it at two configurations to catch a frame that moves.
     auto offset_at = [&](const std::array<double, 6> &q) {
       robot_state_->setJointGroupPositions(joint_model_group_, q.data());
       return Eigen::Isometry3d(robot_state_->getGlobalLinkTransform(opw_tool_frame).inverse() *
@@ -217,8 +212,7 @@ namespace moveit_opw_kinematics_plugin {
                 test_angles[0], test_angles[1], test_angles[2],
                 test_angles[3], test_angles[4], test_angles[5]);
 
-    // Get FK from OPW with the original test angles, extended to the group
-    // tip by the fixed tip offset (identity in the legacy configuration).
+    // OPW FK extended to the group tip by the fixed tip offset.
     Eigen::Isometry3d fk_pose_opw = opw_kinematics::forward(opw_parameters_, test_angles) * tip_offset_;
 
     // Give MoveIt the angles that OPW is actually using internally
@@ -957,8 +951,7 @@ namespace moveit_opw_kinematics_plugin {
         RCLCPP_INFO(LOGGER, "Successfully cached %zu parameters from move_group", cached_parameters_.size());
         return true;
       } else {
-        // Not an error: the caller falls back to the locally-declared
-        // parameters, which every node launching this plugin is given.
+        // The caller falls back to locally declared parameters.
         RCLCPP_INFO(LOGGER, "Timeout caching parameters from move_group, will use local parameters");
         return false;
       }
@@ -1019,11 +1012,8 @@ namespace moveit_opw_kinematics_plugin {
                                            std::vector<std::vector<double> > &joint_poses) const {
     joint_poses.clear();
 
-    // Transform input pose: express in the OPW base frame and convert the
-    // requested TIP pose to the unique equivalent pose of the frame the OPW
-    // model reaches (tip_offset_ is identity in the legacy configuration).
-    // Solving happens AFTER this conversion, so any solution puts the tip
-    // exactly on the requested pose — no solutions are gained or lost.
+    // Convert the requested tip pose to the equivalent OPW-frame pose before
+    // solving, so every solution places the tip exactly on the request.
     auto base_transform = robot_state_->getGlobalLinkTransform(base_frame_);
 
     Eigen::Isometry3d tool_pose = base_transform * pose * tip_offset_.inverse();

@@ -224,12 +224,10 @@ namespace moveit_opw_kinematics_plugin {
 
     opw_kinematics::Parameters<double> opw_parameters_;
 
-    // Universal Toolframes: fixed transform from the frame the OPW model
-    // physically reaches (the `opw_tool_frame` parameter, e.g. abb_tool0 at
-    // the flange face) to the group's tip frame (tool0, e.g. the 3R pallet).
-    // Identity when opw_tool_frame is unset or equals the tip (legacy
-    // behaviour). IK converts the requested tip pose to the equivalent
-    // OPW-frame pose BEFORE solving; FK appends the transform after solving.
+    // Fixed transform from the frame the OPW model reaches (opw_tool_frame,
+    // e.g. abb_tool0) to the group tip; identity when unset or equal to the
+    // tip. IK converts the tip pose to the OPW frame before solving; FK
+    // appends the transform after solving.
     Eigen::Isometry3d tip_offset_ = Eigen::Isometry3d::Identity();
 
     /// Resolve opw_tool_frame and compute tip_offset_ from the robot model.
