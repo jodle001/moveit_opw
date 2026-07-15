@@ -91,6 +91,13 @@ namespace moveit_opw_kinematics_plugin {
       return false;
     }
 
+    // Universal Toolframes: resolve the fixed OPW-frame -> tip transform
+    // (identity unless opw_tool_frame is configured). Must happen before the
+    // self-test, which validates FK including this transform.
+    if (!computeTipOffset()) {
+      return false;
+    }
+
     // check geometric parameters for opw model
     if (!selfTest()) {
       RCLCPP_ERROR_STREAM(LOGGER, "The OPW parameters loaded from the parameter "
@@ -139,6 +146,63 @@ namespace moveit_opw_kinematics_plugin {
     return ((node_->now() - start_time).seconds() >= duration);
   }
 
+  bool MoveItOPWKinematicsPlugin::computeTipOffset() {
+    tip_offset_ = Eigen::Isometry3d::Identity();
+
+    // Same lookup chain as the geometric parameters in setOPWParameters():
+    // move_group cache first, then local node parameters, then the async
+    // move_group fallback. Each helper already tries the bare and
+    // robot_description_kinematics.<group>. prefixed names.
+    std::string opw_tool_frame;
+    bool found = lookupCachedParam("opw_tool_frame", opw_tool_frame, std::string(""));
+    if (!found || opw_tool_frame.empty()) {
+      found = lookupParam(node_, "opw_tool_frame", opw_tool_frame, std::string(""));
+    }
+
+    if (!found || opw_tool_frame.empty()) {
+      // Legacy behaviour: the OPW model reaches the tip frame directly.
+      RCLCPP_INFO(LOGGER, "opw_tool_frame not set; OPW model reaches tip frame '%s' directly",
+                  tip_frames_[0].c_str());
+      return true;
+    }
+    if (opw_tool_frame == tip_frames_[0]) {
+      RCLCPP_INFO(LOGGER, "opw_tool_frame equals tip frame '%s'; no tip offset needed",
+                  tip_frames_[0].c_str());
+      return true;
+    }
+
+    if (!robot_model_->hasLinkModel(opw_tool_frame)) {
+      RCLCPP_ERROR(LOGGER, "opw_tool_frame '%s' is not a link of the robot model", opw_tool_frame.c_str());
+      return false;
+    }
+
+    // The transform must be constant, i.e. only fixed joints between the OPW
+    // frame and the tip. Evaluate it at two distinct configurations to catch
+    // a misconfigured frame that actually moves relative to the tip.
+    auto offset_at = [&](const std::array<double, 6> &q) {
+      robot_state_->setJointGroupPositions(joint_model_group_, q.data());
+      return Eigen::Isometry3d(robot_state_->getGlobalLinkTransform(opw_tool_frame).inverse() *
+                               robot_state_->getGlobalLinkTransform(tip_frames_[0]));
+    };
+    const Eigen::Isometry3d offset_a = offset_at({0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
+    const Eigen::Isometry3d offset_b = offset_at({0.3, -0.2, 0.1, 0.4, -0.5, 0.6});
+    robot_state_->setToDefaultValues();
+
+    if (!offset_a.isApprox(offset_b, 1e-9)) {
+      RCLCPP_ERROR(LOGGER,
+                   "opw_tool_frame '%s' is not rigidly attached to tip frame '%s' "
+                   "(the transform between them changes with the joint state)",
+                   opw_tool_frame.c_str(), tip_frames_[0].c_str());
+      return false;
+    }
+
+    tip_offset_ = offset_a;
+    const auto t = tip_offset_.translation();
+    RCLCPP_INFO(LOGGER, "OPW tip offset '%s' -> '%s': [%.5f, %.5f, %.5f]",
+                opw_tool_frame.c_str(), tip_frames_[0].c_str(), t.x(), t.y(), t.z());
+    return true;
+  }
+
   bool MoveItOPWKinematicsPlugin::selfTest() {
     // First, make sure the offsets are loaded
     RCLCPP_INFO(LOGGER, "OPW offsets: [%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]",
@@ -153,8 +217,9 @@ namespace moveit_opw_kinematics_plugin {
                 test_angles[0], test_angles[1], test_angles[2],
                 test_angles[3], test_angles[4], test_angles[5]);
 
-    // Get FK from OPW with the original test angles
-    auto fk_pose_opw = opw_kinematics::forward(opw_parameters_, test_angles);
+    // Get FK from OPW with the original test angles, extended to the group
+    // tip by the fixed tip offset (identity in the legacy configuration).
+    Eigen::Isometry3d fk_pose_opw = opw_kinematics::forward(opw_parameters_, test_angles) * tip_offset_;
 
     // Give MoveIt the angles that OPW is actually using internally
     robot_state_->setJointGroupPositions(joint_model_group_, test_angles.data());
@@ -465,7 +530,8 @@ namespace moveit_opw_kinematics_plugin {
 
     std::array<double, 6> joint_angles_array{};
     std::copy_n(joint_angles.begin(), 6, joint_angles_array.begin());
-    poses[0] = tf2::toMsg(opw_kinematics::forward(opw_parameters_, joint_angles_array));
+    poses[0] = tf2::toMsg(
+        Eigen::Isometry3d(opw_kinematics::forward(opw_parameters_, joint_angles_array) * tip_offset_));
     return true;
   };
 
@@ -782,6 +848,12 @@ namespace moveit_opw_kinematics_plugin {
               RCLCPP_DEBUG(LOGGER, "Found local parameter '%s'", param_name.c_str());
               return true;
             }
+          } else if constexpr (std::is_same_v<T, std::string>) {
+            if (param_result.get_type() == rclcpp::ParameterType::PARAMETER_STRING) {
+              val = param_result.as_string();
+              RCLCPP_DEBUG(LOGGER, "Found local parameter '%s'", param_name.c_str());
+              return true;
+            }
           }
         } catch (const std::exception &e) {
           RCLCPP_WARN(LOGGER, "Error getting local parameter '%s': %s", param_name.c_str(), e.what());
@@ -819,6 +891,11 @@ namespace moveit_opw_kinematics_plugin {
         val = param_value.integer_value;
         return true;
       }
+    } else if constexpr (std::is_same_v<T, std::string>) {
+      if (param_value.type == rcl_interfaces::msg::ParameterType::PARAMETER_STRING) {
+        val = param_value.string_value;
+        return true;
+      }
     }
     return false;
   }
@@ -845,7 +922,9 @@ namespace moveit_opw_kinematics_plugin {
       "opw_kinematics_geometric_parameters.c4",
       "opw_kinematics_joint_offsets",
       "opw_kinematics_joint_sign_corrections",
+      "opw_tool_frame",
       // Also try with prefixes
+      "robot_description_kinematics." + group_name_ + ".opw_tool_frame",
       "robot_description_kinematics." + group_name_ + ".opw_kinematics_geometric_parameters.a1",
       "robot_description_kinematics." + group_name_ + ".opw_kinematics_geometric_parameters.a2",
       "robot_description_kinematics." + group_name_ + ".opw_kinematics_geometric_parameters.b",
@@ -878,7 +957,9 @@ namespace moveit_opw_kinematics_plugin {
         RCLCPP_INFO(LOGGER, "Successfully cached %zu parameters from move_group", cached_parameters_.size());
         return true;
       } else {
-        RCLCPP_WARN(LOGGER, "Timeout caching parameters from move_group");
+        // Not an error: the caller falls back to the locally-declared
+        // parameters, which every node launching this plugin is given.
+        RCLCPP_INFO(LOGGER, "Timeout caching parameters from move_group, will use local parameters");
         return false;
       }
     } catch (const std::exception &e) {
@@ -938,13 +1019,15 @@ namespace moveit_opw_kinematics_plugin {
                                            std::vector<std::vector<double> > &joint_poses) const {
     joint_poses.clear();
 
-    // Transform input pose
-    // needed if we introduce a tip frame different from tool0
-    // or a different base frame
+    // Transform input pose: express in the OPW base frame and convert the
+    // requested TIP pose to the unique equivalent pose of the frame the OPW
+    // model reaches (tip_offset_ is identity in the legacy configuration).
+    // Solving happens AFTER this conversion, so any solution puts the tip
+    // exactly on the requested pose — no solutions are gained or lost.
     auto base_transform = robot_state_->getGlobalLinkTransform(base_frame_);
 
-    Eigen::Isometry3d tool_pose = base_transform * pose;// * tip_frame.inverse();
-    
+    Eigen::Isometry3d tool_pose = base_transform * pose * tip_offset_.inverse();
+
     auto sols = opw_kinematics::inverse(opw_parameters_, tool_pose);
 
     // Check the output
