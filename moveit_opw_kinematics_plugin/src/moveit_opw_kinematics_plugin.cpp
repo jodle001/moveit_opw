@@ -542,7 +542,7 @@ namespace moveit_opw_kinematics_plugin {
   }
 
   rcl_interfaces::srv::GetParameters::Response::SharedPtr
-  MoveItOPWKinematicsPlugin::getParamsFromNode(const std::string &node_name, const std::string &parameter_name) {
+  MoveItOPWKinematicsPlugin::getParamsFromNode(const std::string & /*node_name*/, const std::string &parameter_name) {
     auto client = node_->create_client<rcl_interfaces::srv::GetParameters>("/move_group/get_parameters");
     while (!client->wait_for_service(std::chrono::seconds(1))) {
       RCLCPP_WARN(LOGGER, "Waiting for server to be up");
